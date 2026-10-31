@@ -11,6 +11,7 @@ than run it as-is.
 |---|---|---|---|
 | Hourly news digest | `lg_workflows.news.hourly` (graph `news_hourly`) | Every hour | Collects US politics, China politics, and AI news, merges reports of the same event, ranks events, writes a Chinese Markdown digest with summaries and Hacker News comment sentiment, and optionally posts the hottest events to X. |
 | Daily news digest | `lg_workflows.news.daily` | 23:50 daily | Condenses the day's hourly events into one digest with key takeaways. |
+| Price watch | `lg_workflows.deals.watch` (graph `deals_watch`) | Every 3 hours, 07:00–01:00 | Checks Best Buy, Amazon, and Newegg (Canada) and canadadz.com deal posts for the items in a watchlist, and sends an alert when an item drops below its normal price. |
 
 More workflows will be added over time. They share the components described under
 [Shared components](#shared-components).
@@ -26,6 +27,7 @@ Model access, agents, and alerts live outside any single workflow, so every grap
 | `lg_workflows/agent_bridge.py` | LangGraph adapters for the CLI agents: `cli_agent_node(...)` to use one as a node, and `ask_claude_code` / `ask_gemini_agent` / `ask_cursor_agent` to use them as tools, with session ids kept in graph state. |
 | `lg_workflows/notify.py` | Alerts through desktop notifications and/or a Telegram bot. `alert(key, ...)` announces a problem once (and again daily while it lasts); `resolve(key, ...)` announces the recovery once. |
 | `lg_workflows/x_browser.py` | Posts to X through a logged-in Chrome profile, with X's weighted character counting. |
+| `lg_workflows/browser.py` | Headless Chrome on a per-site persistent profile, tuned to pass bot checks such as Cloudflare's, and an MCP config that hands the same profile to a Claude Code agent. |
 | `lg_workflows/smoke.py` | Checks that every configured model backend answers. |
 
 ## Setup
@@ -41,10 +43,14 @@ Model access, agents, and alerts live outside any single workflow, so every grap
     sends it a few hundred requests per day.
   - A gateway or provider for the "brain" model. The news workflow uses it only for the daily digest.
 - **Optional:**
-  - CLI agents, for workflows that use them (the news workflows do not): [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
+  - CLI agents, for workflows that use them: [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
     (`claude`), Antigravity (`agy`), [Cursor CLI](https://cursor.com/cli) (`agent`). Install and log in to each
-    one following its own instructions.
-  - Google Chrome, for posting to X.
+    one following its own instructions. The news workflows use none; the price watch uses `claude` as its last
+    fallback.
+  - Google Chrome, for posting to X and for the price watch.
+  - Node.js (`npx`), for the price watch's agent fallback, which runs the
+    [Playwright MCP](https://github.com/microsoft/playwright-mcp) server.
+  - A local model with image input, for the price watch's screenshot fallback.
   - A Telegram bot, for alerts on your phone.
 
 ### 2. Clone and install
@@ -75,6 +81,7 @@ Then edit `.env`. It is gitignored: keep real endpoints, keys, and tokens only t
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Telegram bot for alerts. See [Alerts](#alerts). |
 | `X_POST_MODE` | `off` (default), `dry_run`, or `live`. See [Posting to X](#posting-to-x). |
 | `X_CHROME_PROFILE` | Optional. Chrome profile used for X; default `data/x_chrome_profile`. |
+| `DEALS_AGENT_FALLBACK` | `claude` (default) or `off`. See [Price watch](#price-watch). |
 | `LANGSMITH_*` | Optional. Enables tracing in LangSmith. |
 
 ### 4. Check the setup
@@ -170,10 +177,51 @@ Then set `X_POST_MODE` in `.env`:
 The setting is read on every run, so changing it takes effect at the next hour. Posted texts and links are
 recorded in the `x_posts` table of `data/news.db`.
 
+## Price watch
+
+Checks the items in `lg_workflows/deals/watchlist.toml` on Best Buy, Amazon, and Newegg (the Canadian
+sites, prices in CAD) and on [canadadz.com](https://www.canadadz.com/), a Chinese-language Canadian deals
+site, and sends an alert when one is cheap.
+
+```mermaid
+flowchart LR
+    START -- one Send per store --> scan --> agent_fallback --> evaluate --> notify
+```
+
+| Step | Runs on | What it does |
+|---|---|---|
+| `scan` | Code, Chrome, local model | One parallel branch per store. Product stores are tried tier by tier, stopping at the first that finds products: a plain request (Best Buy's JSON API, Amazon's HTML), then headless Chrome (Newegg is behind Cloudflare; Amazon sometimes shows a captcha), then screenshots read by the local vision model. The model only locates listings: each title and price is re-read from the page text next to where it points, because the model drops cents, misreads models ("5070 12GB" as "5070 Ti 16GB"), and invents listings. For canadadz, fresh posts (last 3 days) from the site's search feed are judged by the local model, which decides whether a deal is for exactly the watched variant. |
+| `agent_fallback` | Claude Code | Only for stores where every tier failed: a Claude Code agent drives the store's headless Chrome through Playwright MCP, with no other tools, and returns listings as JSON. Vision is enabled, so when the page structure is unclear it works from screenshots and clicks and types at coordinates. It gets through pages that block the scripted browser (Best Buy's site does). |
+| `evaluate` | Code | Keeps listings that match the item (title rules, price range, in stock), compares the cheapest with the item's normal price, and records the run. |
+| `notify` | Code | Sends price and deal-post alerts; alerts when a store has failed 3 runs in a row. |
+
+**Matching.** Each watchlist entry has `require` phrase groups (every group must appear in the title),
+`exclude` phrases (refurbished, carrier financing, accessories, prebuilt PCs, ...), and a `min_price` /
+`max_price` range that drops accessories and bundles. Sold-out listings are skipped: Best Buy's stock API is
+checked, and Amazon and Newegg show no current price for them.
+
+**Normal price.** The median of the item's cheapest matching price per run over the last 30 days, once there
+are 4 runs; until then the entry's `normal_price` (if any). An alert goes out when the cheapest listing is at
+least 5% below normal, or at or below the entry's optional `target_price`. Within 72 hours of an alert, the
+item alerts again only if it gets at least 1% cheaper. canadadz posts alert when the model says the deal is
+for the item ("maybe" when the post does not name the variant) and the price, if given, is 5% below normal.
+
+To watch another item, add an `[[item]]` to the watchlist; the comments at the top describe each field. Each
+store uses its own Chrome profile under `data/shop_chrome/`. Prices, alerts, and judged posts are stored in
+`data/deals.db`; vision screenshots go to `data/deals_screenshots/`.
+
+```bash
+uv run python -m lg_workflows.deals.watch            # live: sends alerts
+uv run python -m lg_workflows.deals.watch --dry-run  # prints alerts instead (prices are still recorded)
+uv run python -m lg_workflows.deals.stores newegg vision   # try one tier of one store
+uv run python -m lg_workflows.deals.agent bestbuy          # try the agent on one store
+```
+
 ## Alerts
 
-Workflows report problems through `lg_workflows.notify`. Today that covers X posting: an expired login,
+Workflows report problems through `lg_workflows.notify`. For X posting, that covers an expired login,
 a verification challenge, a rejected or unconfirmed post (immediately), and other errors (after two in a row).
+The price watch sends its deal alerts the same way, and reports a store that fails 3 runs in a row.
 An ongoing problem is announced once and then daily; its recovery is announced once. Alert state is kept in
 `data/alerts.json`.
 
@@ -197,22 +245,24 @@ Desktop alerts use `notify-send` and stay on screen until dismissed. To add Tele
 |---|---|
 | `news-hourly.timer` | On the hour, with up to 60 s random delay. A run missed while the machine was off runs once at startup. |
 | `news-daily.timer` | 23:50. No catch-up, because the job builds the current date; rebuild a missed day with `--date`. |
+| `deals-watch.timer` | 01:00, 07:00, 10:00, 13:00, 16:00, 19:00, 22:00, with up to 2 min random delay. |
 
 They assume the repo is at `~/source/langgraph-workspace`; edit `WorkingDirectory` in the `.service` files if
 yours is elsewhere.
 
 ```bash
 cd deploy/systemd
-systemctl --user link "$PWD/news-hourly.service" "$PWD/news-daily.service"
-systemctl --user enable --now "$PWD/news-hourly.timer" "$PWD/news-daily.timer"
+systemctl --user link "$PWD/news-hourly.service" "$PWD/news-daily.service" "$PWD/deals-watch.service"
+systemctl --user enable --now "$PWD/news-hourly.timer" "$PWD/news-daily.timer" "$PWD/deals-watch.timer"
 loginctl enable-linger "$USER"   # keep timers running while logged out
 ```
 
 Useful commands:
 
 ```bash
-systemctl --user list-timers 'news-*'      # next and last runs
+systemctl --user list-timers 'news-*' 'deals-*'   # next and last runs
 journalctl --user -u news-hourly -f        # follow the hourly log
+journalctl --user -u deals-watch -n 30     # last price watch runs
 systemctl --user disable --now news-hourly.timer news-daily.timer   # stop
 ```
 
@@ -223,7 +273,7 @@ systemctl --user disable --now news-hourly.timer news-daily.timer   # stop
   [LangGraph Studio](https://smith.langchain.com/studio/?baseUrl=http://127.0.0.1:2024). Running a graph there
   is a real run: it fetches, writes a digest, and marks items as reported.
 - **Local state:** everything generated lives in `data/` (gitignored): databases, digests, the embedding
-  model cache, the X Chrome profile, screenshots, and alert state.
+  model cache, the X and store Chrome profiles, screenshots, and alert state.
 
 ### Layout
 
@@ -231,11 +281,15 @@ systemctl --user disable --now news-hourly.timer news-daily.timer   # stop
 src/lg_workflows/
   models.py, cli_agents.py, agent_bridge.py   # model and agent access
   notify.py, x_browser.py, smoke.py           # alerts, X posting, backend check
+  browser.py                                  # headless Chrome profiles, Playwright MCP config
   news/                                       # news digest workflows
     hourly.py, daily.py                       #   graph and daily job
     config.py, prompts.py                     #   topics, feeds, tunables, prompts
     sources.py, clustering.py, store.py       #   fetching, event grouping, SQLite
     publish.py, x_post.py                     #   Markdown output, X posting
+  deals/                                      # price watch
+    watch.py, watchlist.toml, config.py       #   graph, watched items, matching and tunables
+    stores.py, canadadz.py, agent.py, db.py   #   scrapers, deal posts, agent fallback, SQLite
 deploy/systemd/                               # schedulers
 tests/
 ```

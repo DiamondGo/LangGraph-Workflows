@@ -45,6 +45,24 @@ def test_claude_edit_uses_allowlist(fake_run):
     assert "--allowedTools" in cmd and "--disallowedTools" in cmd
 
 
+def test_claude_browse_allows_only_mcp_servers(fake_run, tmp_path):
+    calls = fake_run(CLAUDE_OK)
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text(json.dumps({"mcpServers": {"browser": {"command": "npx"}}}))
+    run_cli_agent("claude", "q", cwd="/tmp", mode="browse", mcp_config=str(cfg))
+    cmd = calls[0]
+    assert cmd[cmd.index("--allowedTools") + 1] == "mcp__browser"
+    assert "Bash" in cmd[cmd.index("--disallowedTools") + 1].split(",")
+    assert "--strict-mcp-config" in cmd and cmd[cmd.index("--mcp-config") + 1] == str(cfg)
+
+
+def test_browse_needs_config_and_claude():
+    with pytest.raises(ValueError):
+        run_cli_agent("claude", "q", cwd="/tmp", mode="browse")
+    with pytest.raises(ValueError):
+        run_cli_agent("agy", "q", cwd="/tmp", mode="browse", mcp_config="x.json")
+
+
 def test_claude_structured_output_preferred(fake_run):
     fake_run(json.dumps({"is_error": False, "result": "{}", "structured_output": {"a": 1}, "session_id": "s"}))
     assert run_cli_agent("claude", "q", cwd="/tmp", schema={"type": "object"}).result == {"a": 1}

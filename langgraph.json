@@ -1,7 +1,8 @@
 {
   "python_version": "3.12",
   "graphs": {
-    "news_hourly": "./src/lg_workflows/news/hourly.py:graph"
+    "news_hourly": "./src/lg_workflows/news/hourly.py:graph",
+    "deals_watch": "./src/lg_workflows/deals/watch.py:graph"
   },
   "dependencies": ["."],
   "env": ".env"

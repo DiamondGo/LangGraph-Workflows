@@ -8,6 +8,7 @@ import os
 import subprocess
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal
 
 from dotenv import load_dotenv
@@ -15,13 +16,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 Backend = Literal["claude", "agy", "cursor"]
-Mode = Literal["readonly", "edit"]
+# browse: only the tools of the MCP servers in `mcp_config` (e.g. a headless browser); no shell, files or web fetch.
+Mode = Literal["readonly", "edit", "browse"]
 
 # Subscription quotas are small and the CLIs are heavy; never run two of the same at once.
 _LOCKS: dict[str, threading.Semaphore] = {b: threading.Semaphore(1) for b in ("claude", "agy", "cursor")}
 
 CLAUDE_EDIT_ALLOWED_TOOLS = "Read,Edit,Write,Glob,Grep,Bash(git diff *),Bash(git status *),Bash(git log *)"
 CLAUDE_EDIT_DISALLOWED_TOOLS = "Bash(git push *),Bash(rm *),Bash(sudo *)"
+CLAUDE_BROWSE_DISALLOWED_TOOLS = "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"
 
 
 class CLIAgentError(RuntimeError):
@@ -37,12 +40,19 @@ class CLIAgentResult:
 
 
 def _claude_cmd(prompt: str, mode: Mode, session_id: str | None, fork: bool,
-                schema: dict | None, add_dirs: tuple[str, ...]) -> list[str]:
+                schema: dict | None, add_dirs: tuple[str, ...], mcp_config: str | None = None) -> list[str]:
     cmd = ["claude", "-p", prompt,
            "--model", os.environ.get("CLAUDE_MODEL", "claude-sonnet-5-5"),
            "--output-format", "json"]
     if mode == "readonly":
         cmd += ["--permission-mode", "plan"]
+    elif mode == "browse":
+        if not mcp_config:
+            raise ValueError("browse mode needs mcp_config")
+        servers = json.loads(Path(mcp_config).read_text())["mcpServers"]
+        cmd += ["--permission-mode", "default", "--strict-mcp-config", "--mcp-config", mcp_config,
+                "--allowedTools", ",".join(f"mcp__{name}" for name in servers),
+                "--disallowedTools", CLAUDE_BROWSE_DISALLOWED_TOOLS]
     else:
         cmd += ["--permission-mode", "acceptEdits",
                 "--allowedTools", CLAUDE_EDIT_ALLOWED_TOOLS,
@@ -57,9 +67,11 @@ def _claude_cmd(prompt: str, mode: Mode, session_id: str | None, fork: bool,
 
 
 def _agy_cmd(prompt: str, mode: Mode, session_id: str | None, fork: bool,
-             schema: dict | None, add_dirs: tuple[str, ...]) -> list[str]:
+             schema: dict | None, add_dirs: tuple[str, ...], mcp_config: str | None = None) -> list[str]:
     if fork:
         raise ValueError("agy does not support forking a conversation")
+    if mode == "browse" or mcp_config:
+        raise ValueError("agy backend does not support browse mode")
     cmd = ["agy", "-p", prompt,
            "--model", os.environ.get("AGY_MODEL", "gemini-3.8-flash-medium"),
            "--output-format", "json",
@@ -74,12 +86,12 @@ def _agy_cmd(prompt: str, mode: Mode, session_id: str | None, fork: bool,
 
 
 def _cursor_cmd(prompt: str, mode: Mode, session_id: str | None, fork: bool,
-                schema: dict | None, add_dirs: tuple[str, ...]) -> list[str]:
+                schema: dict | None, add_dirs: tuple[str, ...], mcp_config: str | None = None) -> list[str]:
     # Without --mode, `agent -p` gets every tool including shell and has no allowlist flag.
     if mode != "readonly":
         raise ValueError("cursor backend is read-only")
-    if fork or schema or add_dirs:
-        raise ValueError("cursor backend does not support fork, schema or add_dirs")
+    if fork or schema or add_dirs or mcp_config:
+        raise ValueError("cursor backend does not support fork, schema, add_dirs or mcp_config")
     cmd = ["agent", "-p", prompt,
            "--model", os.environ.get("CURSOR_MODEL", "claude-opus-5-5-medium"),
            "--output-format", "json",
@@ -148,10 +160,11 @@ def run_cli_agent(
     fork: bool = False,
     schema: dict | None = None,
     add_dirs: tuple[str, ...] = (),
+    mcp_config: str | None = None,
     timeout: int = 900,
 ) -> CLIAgentResult:
     """Run one prompt; pass `session_id` to continue that session (and reuse its cache)."""
-    cmd = _BUILDERS[backend](prompt, mode, session_id, fork, schema, add_dirs)
+    cmd = _BUILDERS[backend](prompt, mode, session_id, fork, schema, add_dirs, mcp_config)
     with _LOCKS[backend]:
         try:
             proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)

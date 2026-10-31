@@ -1,0 +1,41 @@
+# Items watched by the deals workflow (prices in CAD).
+#
+# key          stable id; price history is stored under it, so renaming starts a new history
+# query        search text for the stores; dz_query is the (shorter) one for canadadz.com
+# require      every group must match the listing title; a group matches if any of its phrases does
+# exclude      any of these phrases in the title drops the listing (accessories, used, carrier plans)
+# min_price,
+# max_price    listings outside this range are not the item (cases, bundles, prebuilt PCs)
+# normal_price optional; used until a few runs of price history exist, then the history median wins
+# target_price optional; always alert at or below this price
+# Phrases match whole words, case-insensitively.
+
+[[item]]
+key = "apple-watch-se3-40mm-cellular"
+name = "Apple Watch SE 3 40mm GPS + Cellular"
+query = "Apple Watch SE 3 40mm GPS Cellular"
+dz_query = "Watch SE 3"
+require = [["se 3", "se3", "se (3rd"], ["40mm", "40 mm"], ["cellular", "lte"]]
+exclude = [
+    "refurbished", "renewed", "open box", "used", "pre-owned",
+    "rogers", "telus", "bell", "fido", "koodo", "virgin", "freedom", "monthly", "financing",
+    # Not "case": real listings say "Aluminum Case with Sport Band". min_price drops most accessories.
+    "protector", "band for", "bands for", "charger", "compatible",
+]
+min_price = 200
+max_price = 700
+normal_price = 399.99
+
+[[item]]
+key = "rtx-5070-ti-16gb"
+name = "GeForce RTX 5070 Ti 16GB"
+query = "RTX 5070 Ti 16GB graphics card"
+dz_query = "5070 Ti"
+require = [["5070 ti", "5070ti"]]
+exclude = [
+    "refurbished", "renewed", "open box", "used", "pre-owned",
+    "laptop", "notebook", "gaming pc", "gaming desktop", "desktop pc", "desktop computer", "tower",
+    "prebuilt", "water block", "waterblock", "bracket", "backplate", "cable", "riser", "holder",
+]
+min_price = 800
+max_price = 4000

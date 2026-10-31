@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the price watch every 3 hours, skipping 01:00-07:00
+
+[Timer]
+# 01:00 is the last run of the night, 07:00 the first of the morning.
+OnCalendar=*-*-* 01,07,10,13,16,19,22:00:00
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target
