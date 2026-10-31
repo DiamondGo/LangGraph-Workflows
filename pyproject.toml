@@ -1,0 +1,31 @@
+[project]
+name = "lg-workflows"
+version = "0.1.0"
+description = "LangGraph workflows backed by local Qwen, a LiteLLM gateway, and the claude/agy CLIs"
+readme = "README.md"
+authors = [
+    { name = "MasterCoderK", email = "8674856+DiamondGo@users.noreply.github.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastembed>=0.9.1",
+    "feedparser>=6.0.14",
+    "httpx>=0.28.1",
+    "langchain>=1.4.7",
+    "langchain-openai>=1.7.3",
+    "langgraph>=1.2.18",
+    "langgraph-checkpoint-sqlite>=3.1.2",
+    "playwright>=1.64.1",
+    "python-dotenv>=1.2.4",
+    "trafilatura>=2.3.1",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.28,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "langgraph-cli[inmem]>=0.4.40",
+    "pytest>=9.2.0",
+]

@@ -1,0 +1,8 @@
+{
+  "python_version": "3.12",
+  "graphs": {
+    "news_hourly": "./src/lg_workflows/news/hourly.py:graph"
+  },
+  "dependencies": ["."],
+  "env": ".env"
+}

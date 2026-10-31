@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the daily news digest after the 23:00 hourly run
+
+[Timer]
+# Late enough for the 23:00 hourly run (~10-30 min) to have finished.
+OnCalendar=*-*-* 23:50:00
+# No catch-up: the job defaults to today's date, so a run after midnight would build the wrong day.
+# Rebuild a missed day with `--date YYYY-MM-DD`.
+
+[Install]
+WantedBy=timers.target

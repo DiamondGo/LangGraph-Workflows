@@ -1,0 +1,12 @@
+[Unit]
+Description=LangGraph hourly news digest
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/source/langgraph-workspace
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/.local/bin/uv run --frozen python -m lg_workflows.news.hourly
+TimeoutStartSec=55min
+Nice=10
