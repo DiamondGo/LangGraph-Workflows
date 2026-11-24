@@ -1,0 +1,13 @@
+[Unit]
+Description=LangGraph x_concierge: reply to comments on our X posts
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/source/langgraph-workspace
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/.local/bin/uv run --frozen python -m lg_workflows.news.x_reply
+# Waits up to 20 min for the Chrome profile if the hourly news run is posting.
+TimeoutStartSec=40min
+Nice=10

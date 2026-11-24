@@ -8,11 +8,16 @@ from pathlib import Path
 
 import numpy as np
 
+from pydantic import BaseModel
+
 from lg_workflows import notify, x_browser
+from lg_workflows.models import local_llm
 from lg_workflows.news import store
 from lg_workflows.news.clustering import embed
-from lg_workflows.news.config import (CLUSTER_THRESHOLD, X_MAX_POSTS_PER_RUN, X_MIN_POST_SCORE,
-                                      X_POST_GAP_SECONDS, X_QUIET_HOURS, X_REPOST_WINDOW_HOURS, X_SCREENSHOT_DIR)
+from lg_workflows.news.config import (CLUSTER_THRESHOLD, X_FILL_MIN_SCORE, X_MAX_POSTS_PER_RUN, X_MIN_POST_SCORE,
+                                      X_POST_GAP_SECONDS, X_QUIET_HOURS, X_REPOST_WINDOW_HOURS, X_SCREENSHOT_DIR,
+                                      X_TARGET_POSTS_PER_RUN)
+from lg_workflows.news.prompts import X_NOVELTY
 
 MODES = ("off", "dry_run", "live")
 ALERT_KEY = "x_post"
@@ -60,20 +65,47 @@ def compose(event: dict) -> str:
     return header + (f"\n\n{body}" if body else "") + tail
 
 
-def select(summaries: list[dict], posted_anchors: list[str]) -> list[dict]:
+class Novelty(BaseModel):
+    materially_new: bool
+    reason: str = ""
+
+
+def is_materially_new(event: dict, prior_texts: list[str]) -> bool:
+    """Ask the LLM whether `event` adds an important new fact to stories already posted. Fails closed."""
+    prompt = X_NOVELTY.format(posted="\n---\n".join(prior_texts), title=event["title"], summary=event["summary"])
+    try:
+        verdict = (local_llm(thinking=False).with_structured_output(Novelty, method="function_calling")
+                   .invoke(prompt))
+    except Exception as e:
+        print(f"    ! novelty check {event['title'][:40]!r}: {type(e).__name__}: {e}"[:300])
+        return False
+    print(f"    novelty {event['title'][:40]!r}: {verdict.materially_new} {verdict.reason}"[:300])
+    return verdict.materially_new
+
+
+def select(summaries: list[dict], posted: list[dict]) -> list[dict]:
+    """Pick events to post: all above X_MIN_POST_SCORE (max X_MAX_POSTS_PER_RUN), topped up to X_TARGET_POSTS_PER_RUN.
+    A story similar to one already posted is skipped unless it has a materially new development."""
     # A failed summary keeps the source headline as its title; never post those.
-    ok = [s for s in summaries if s["title"] != s["items"][0]["title"] and s["score"] >= X_MIN_POST_SCORE]
+    ok = [s for s in summaries if s["title"] != s["items"][0]["title"] and s["score"] >= X_FILL_MIN_SCORE]
     ok.sort(key=lambda s: -s["score"])
-    seen = embed(posted_anchors) if posted_anchors else np.zeros((0, 0))
-    chosen = []
+    prior = embed([p["anchor"] for p in posted]) if posted else np.zeros((0, 0))
+    chosen, chosen_vecs = [], []
     for s in ok:
         if len(chosen) >= X_MAX_POSTS_PER_RUN:
             break
+        if s["score"] < X_MIN_POST_SCORE and len(chosen) >= X_TARGET_POSTS_PER_RUN:
+            break  # only top up to the target with below-bar events; ok is sorted, so nothing better follows
         v = embed([anchor(s)])[0]
-        if len(seen) and float((seen @ v).max()) >= CLUSTER_THRESHOLD:
-            continue
+        if chosen_vecs and float((np.array(chosen_vecs) @ v).max()) >= CLUSTER_THRESHOLD:
+            continue  # same story as one picked earlier in this run
+        if len(prior):
+            sims = prior @ v
+            related = [posted[i]["text"] for i in np.argsort(sims) if sims[i] >= CLUSTER_THRESHOLD]
+            if related and not is_materially_new(s, related):
+                continue
         chosen.append(s)
-        seen = np.vstack([seen, v]) if len(seen) else v[None, :]
+        chosen_vecs.append(v)
     return chosen
 
 
@@ -85,7 +117,7 @@ def post_x(state: dict) -> dict:
     if run_hour in X_QUIET_HOURS:
         return {"x_posts": [f"quiet hours ({run_hour:02d}:00), not posting"]}
     since = (datetime.now(timezone.utc) - timedelta(hours=X_REPOST_WINDOW_HOURS)).isoformat()
-    chosen = select(state.get("summaries", []), store.x_post_anchors_since(since))
+    chosen = select(state.get("summaries", []), store.x_posts_since(since))
     results = []
     if not chosen:
         return {"x_posts": results}

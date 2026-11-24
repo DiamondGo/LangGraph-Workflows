@@ -15,6 +15,10 @@ load_dotenv()
 _gateway_limiter = InMemoryRateLimiter(requests_per_second=0.5, max_bucket_size=3)
 
 
+def local_model_name() -> str:
+    return os.environ.get("LOCAL_MODEL", "Qwen3.8-Flash-Next")
+
+
 def local_llm(thinking: bool = True, **kwargs) -> ChatOpenAI:
     """`thinking=False` skips Qwen's reasoning phase: ~4x faster, fine for labeling/extraction."""
     if not thinking:
@@ -27,7 +31,7 @@ def local_llm(thinking: bool = True, **kwargs) -> ChatOpenAI:
     return ChatOpenAI(
         base_url=os.environ["LOCAL_BASE_URL"],
         api_key=os.environ["LOCAL_API_KEY"],
-        model=os.environ.get("LOCAL_MODEL", "Qwen3.8-Flash-Next"),
+        model=local_model_name(),
         **kwargs,
     )
 

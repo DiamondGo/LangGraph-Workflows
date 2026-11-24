@@ -25,6 +25,13 @@ CREATE TABLE IF NOT EXISTS x_posts (
     id INTEGER PRIMARY KEY AUTOINCREMENT, run_key TEXT, posted_at TEXT, mode TEXT,
     anchor TEXT, text TEXT, url TEXT
 );
+CREATE TABLE IF NOT EXISTS x_replies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, seen_at TEXT, mode TEXT,
+    status TEXT,  -- skipped | drafted (dry_run) | replied | unconfirmed
+    comment_id TEXT, comment_url TEXT, author TEXT, comment_text TEXT, parent_text TEXT,
+    reply_text TEXT, reply_url TEXT, reason TEXT, model TEXT
+);
+CREATE INDEX IF NOT EXISTS x_replies_comment ON x_replies(comment_id);
 """
 
 
@@ -35,6 +42,8 @@ def connect():
     conn.row_factory = sqlite3.Row
     try:
         conn.executescript(_SCHEMA)
+        if "model" not in {r["name"] for r in conn.execute("PRAGMA table_info(x_replies)")}:
+            conn.execute("ALTER TABLE x_replies ADD COLUMN model TEXT")  # table made before the column existed
         yield conn
         conn.commit()
     finally:
@@ -86,10 +95,40 @@ def record_x_post(run_key: str, mode: str, anchor: str, text: str, url: str | No
                   (run_key, _now(), mode, anchor, text, url))
 
 
-def x_post_anchors_since(since_iso: str, mode: str = "live") -> list[str]:
+def x_posts_since(since_iso: str, mode: str = "live") -> list[dict]:
+    """Posts since `since_iso`, oldest first, as {"anchor", "text"}."""
     with connect() as c:
-        rows = c.execute("SELECT anchor FROM x_posts WHERE posted_at >= ? AND mode = ?", (since_iso, mode))
-        return [r["anchor"] for r in rows]
+        rows = c.execute("SELECT anchor, text FROM x_posts WHERE posted_at >= ? AND mode = ? ORDER BY id",
+                         (since_iso, mode))
+        return [{"anchor": r["anchor"], "text": r["text"]} for r in rows]
+
+
+def record_x_reply(status: str, mode: str, comment: dict, *, reply_text: str | None = None,
+                   reply_url: str | None = None, reason: str | None = None, model: str | None = None) -> None:
+    chain = comment.get("chain") or []
+    with connect() as c:
+        c.execute(
+            "INSERT INTO x_replies (seen_at, mode, status, comment_id, comment_url, author, comment_text,"
+            " parent_text, reply_text, reply_url, reason, model) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (_now(), mode, status, comment["id"], comment["url"], comment["handle"], comment["text"],
+             chain[-1]["text"] if chain else None, reply_text, reply_url, reason, model))
+
+
+def x_reply_handled_ids(revisit_old: bool = False) -> set[str]:
+    """Comments never to look at again. Dry-run drafts do not count: the live run must still answer them.
+    With `revisit_old`, a comment that was only skipped for being older than the age limit counts as unhandled."""
+    sql = "SELECT DISTINCT comment_id FROM x_replies WHERE status != 'drafted'"
+    if revisit_old:
+        sql += " AND NOT (status = 'skipped' AND reason LIKE 'older than%')"
+    with connect() as c:
+        return {r["comment_id"] for r in c.execute(sql)}
+
+
+def x_replies_to_author_on_post(handle: str, post_text: str) -> int:
+    """Replies already sent to `handle` under the post whose text is `post_text`."""
+    with connect() as c:
+        return c.execute("SELECT COUNT(*) FROM x_replies WHERE lower(author) = ? AND parent_text = ?"
+                         " AND status IN ('replied', 'unconfirmed')", (handle.lower(), post_text)).fetchone()[0]
 
 
 def events_between(start_iso: str, end_iso: str, lang: str) -> list[dict]:

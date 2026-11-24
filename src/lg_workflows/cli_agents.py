@@ -73,7 +73,7 @@ def _agy_cmd(prompt: str, mode: Mode, session_id: str | None, fork: bool,
     if mode == "browse" or mcp_config:
         raise ValueError("agy backend does not support browse mode")
     cmd = ["agy", "-p", prompt,
-           "--model", os.environ.get("AGY_MODEL", "gemini-3.8-flash-medium"),
+           "--model", os.environ.get("AGY_MODEL", "gemini-4-hydrogen-high"),
            "--output-format", "json",
            "--mode", "plan" if mode == "readonly" else "accept-edits"]
     if session_id:

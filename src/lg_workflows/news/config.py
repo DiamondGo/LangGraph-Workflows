@@ -15,14 +15,31 @@ MIN_EVENT_SCORE = 0.5
 MIN_EVENTS_PER_TOPIC = 3
 # Posting the hottest events to X (see lg_workflows/x_browser.py). Mode comes from X_POST_MODE in .env:
 # "off" (default), "dry_run" (fill the compose box and screenshot, never post) or "live".
-X_MAX_POSTS_PER_RUN = 3
+# Events scoring >= X_MIN_POST_SCORE always qualify, up to X_MAX_POSTS_PER_RUN. If fewer than
+# X_TARGET_POSTS_PER_RUN qualify, the best remaining events down to X_FILL_MIN_SCORE fill the gap.
+X_MAX_POSTS_PER_RUN = 4
+X_TARGET_POSTS_PER_RUN = 3
 X_MIN_POST_SCORE = 1.5
+X_FILL_MIN_SCORE = 0.8
 X_POST_GAP_SECONDS = (30, 90)
 # Local hours of the hourly run that never post: 02:00 is the last run that posts, 06:00 the first.
 X_QUIET_HOURS = frozenset({3, 4, 5})
 # An event this similar to anything posted in the last X_REPOST_WINDOW_HOURS counts as already posted.
 X_REPOST_WINDOW_HOURS = 24
 X_SCREENSHOT_DIR = DATA_DIR / "x_screenshots"
+# Replying to comments on our posts (see lg_workflows/news/x_reply.py). Mode comes from X_REPLY_MODE in .env:
+# "off" (default), "dry_run" (draft and fill the reply box, never send) or "live".
+# Local hours with no replies: midnight to 06:00. The systemd timer does not fire then either.
+X_REPLY_QUIET_HOURS = frozenset(range(0, 6))
+X_REPLY_MAX_PER_RUN = 5
+X_REPLY_GAP_SECONDS = (30, 90)
+# Comments older than this are marked handled without a reply: late replies look odd.
+X_REPLY_MAX_AGE_HOURS = 24
+# At most this many replies to one person under the same post. Comments under different posts never count together.
+X_REPLY_MAX_PER_AUTHOR_PER_POST = 2
+X_REPLY_IGNORE_HANDLES = frozenset({"grok"})
+# Replies are one short sentence, far under the 280 limit (a Chinese character weighs 2: 50 characters).
+X_REPLY_MAX_WEIGHT = 100
 # Only consider items published within this window; older unseen items are ignored.
 LOOKBACK_HOURS = 3
 # HN discussions take hours to mature, and HN is the only comment source.

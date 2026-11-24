@@ -81,6 +81,8 @@ Then edit `.env`. It is gitignored: keep real endpoints, keys, and tokens only t
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Telegram bot for alerts. See [Alerts](#alerts). |
 | `X_POST_MODE` | `off` (default), `dry_run`, or `live`. See [Posting to X](#posting-to-x). |
 | `X_CHROME_PROFILE` | Optional. Chrome profile used for X; default `data/x_chrome_profile`. |
+| `X_REPLY_MODE` | `off` (default), `dry_run`, or `live`. See [x_concierge](#x_concierge-replying-to-comments). |
+| `X_ACCOUNT_HANDLE` | Optional. Your X handle without `@`. Only the tests use it; the workflows take the handle from the logged-in session. |
 | `DEALS_AGENT_FALLBACK` | `claude` (default) or `off`. See [Price watch](#price-watch). |
 | `LANGSMITH_*` | Optional. Enables tracing in LangSmith. |
 
@@ -164,6 +166,12 @@ It drives a logged-in Chrome profile instead of the paid API. **This automates t
 automation rules forbid, and can get the account restricted. Use it at your own risk.** It never bypasses
 verification: a login prompt or challenge stops posting and sends an alert.
 
+The browser uses a User-Agent matching the installed Chrome version and suppresses the common
+`navigator.webdriver` automation flag. Typing samples a new 90-260 ms delay for every character, with
+additional randomized pauses at punctuation and occasional other characters. Mouse movement follows
+randomized curved paths to the compose box and post button. These changes do not guarantee that X will
+accept a post; rejection and verification still stop the current posting run without blind retries.
+
 ```bash
 uv run python -m lg_workflows.x_browser login   # log in to X in the window that opens, then close it
 uv run python -m lg_workflows.x_browser check   # confirms the session works headlessly
@@ -176,6 +184,47 @@ Then set `X_POST_MODE` in `.env`:
 
 The setting is read on every run, so changing it takes effect at the next hour. Posted texts and links are
 recorded in the `x_posts` table of `data/news.db`.
+
+### x_concierge: replying to comments
+
+`x_concierge` (评论管家, `lg_workflows/news/x_reply.py`) answers comments on the account's own posts.
+
+```mermaid
+flowchart LR
+    START --> collect --> draft --> send --> END
+    collect -. "skip: own, grok, old, comment on a comment" .-> db[(x_replies)]
+    draft -. "skip: declined or failed checks" .-> db
+    send -- "replied / unconfirmed" --> db
+```
+
+| Step | Runs on | What it does |
+|---|---|---|
+| `collect` | Chrome (read only) | Reads the Mentions tab, drops comments already in `x_replies`, and skips your own comments, `grok`, and comments older than 24 h. Then opens each remaining comment's thread and keeps it only if its parent is one of your top-level posts, and the commenter has not already had 2 replies under that same post. Nothing happens when the mode is `off` or between 00:00 and 05:59. |
+| `draft` | Local Qwen | Writes one short reply per comment, or declines it. Each reply is checked in code (links, promises, agreement filler, questions, length, language, numbers and names that are not in the post); a failing reply is rewritten once, then dropped. |
+| `send` | Chrome | Waits for the shared Chrome profile lock, then for each reply opens the comment, clicks Reply, types, sends and waits for X's confirmation, 30-90 s apart. Records the reply, its URL and the model. A send with no confirmation is recorded as `unconfirmed` and never retried. |
+
+It reads <https://x.com/notifications/mentions> and replies only to **direct comments on a top-level post of
+the account**. A comment on a comment, a reply under someone else's post, a plain mention, and replies from
+`grok` are skipped. The local Qwen model writes one short, friendly sentence in the commenter's language, or
+declines spam, abuse, political arguments and attempts to instruct it. A reply is rewritten once, then dropped,
+if it opens with agreement filler ("说得对", "Exactly"), asks a question, makes a promise, contains a link,
+@mention or hashtag, is too long, is in another language than the comment, or uses numbers or names that are
+not in the original post. Limits: 5 replies per run, 30-90 s apart, nothing for comments older than 24 h, nothing
+from 00:00 to 05:59, and at most 2 replies to one person under the same post (one per run). Comments by the same
+person under different posts are never limited.
+
+Every comment is recorded in the `x_replies` table of `data/news.db`, so each one is handled once and later runs
+only look at comments that appeared since (status `replied`, `skipped` or `unconfirmed`; dry-run drafts are not
+recorded as handled). Each row keeps the comment, its parent post, the reply, the reply's URL, the reason for a
+skip, and the **model** that wrote it, for review:
+
+```bash
+sqlite3 -header -column data/news.db "SELECT seen_at, status, author, comment_text, reply_text, model FROM x_replies WHERE status='replied' ORDER BY id DESC LIMIT 20"
+```
+
+Set `X_REPLY_MODE` in `.env`: `off` (default), `dry_run` (fills the reply box and saves a screenshot, never sends),
+or `live`. By hand: `uv run python -m lg_workflows.news.x_reply --mode dry_run`. News posting and replying share
+one Chrome profile; a file lock makes the second job wait for the first.
 
 ## Price watch
 
@@ -245,6 +294,7 @@ Desktop alerts use `notify-send` and stay on screen until dismissed. To add Tele
 |---|---|
 | `news-hourly.timer` | On the hour, with up to 60 s random delay. A run missed while the machine was off runs once at startup. |
 | `news-daily.timer` | 23:50. No catch-up, because the job builds the current date; rebuild a missed day with `--date`. |
+| `x-concierge.timer` | :19 and :49 of every hour from 06:00 to 23:59, with up to 45 s random delay. Does nothing unless `X_REPLY_MODE` is set. |
 | `deals-watch.timer` | 01:00, 07:00, 10:00, 13:00, 16:00, 19:00, 22:00, with up to 2 min random delay. |
 
 They assume the repo is at `~/source/langgraph-workspace`; edit `WorkingDirectory` in the `.service` files if
@@ -252,8 +302,8 @@ yours is elsewhere.
 
 ```bash
 cd deploy/systemd
-systemctl --user link "$PWD/news-hourly.service" "$PWD/news-daily.service" "$PWD/deals-watch.service"
-systemctl --user enable --now "$PWD/news-hourly.timer" "$PWD/news-daily.timer" "$PWD/deals-watch.timer"
+systemctl --user link "$PWD/news-hourly.service" "$PWD/news-daily.service" "$PWD/deals-watch.service" "$PWD/x-concierge.service"
+systemctl --user enable --now "$PWD/news-hourly.timer" "$PWD/news-daily.timer" "$PWD/deals-watch.timer" "$PWD/x-concierge.timer"
 loginctl enable-linger "$USER"   # keep timers running while logged out
 ```
 
@@ -286,7 +336,7 @@ src/lg_workflows/
     hourly.py, daily.py                       #   graph and daily job
     config.py, prompts.py                     #   topics, feeds, tunables, prompts
     sources.py, clustering.py, store.py       #   fetching, event grouping, SQLite
-    publish.py, x_post.py                     #   Markdown output, X posting
+    publish.py, x_post.py, x_reply.py         #   Markdown output, X posting, x_concierge (comment replies)
   deals/                                      # price watch
     watch.py, watchlist.toml, config.py       #   graph, watched items, matching and tunables
     stores.py, canadadz.py, agent.py, db.py   #   scrapers, deal posts, agent fallback, SQLite
