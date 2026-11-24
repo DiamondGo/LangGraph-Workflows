@@ -103,4 +103,4 @@ def test_select_tops_up_to_target_with_below_bar_events_only(monkeypatch):
     for i, ev in enumerate(strong):
         ev["items"][0]["title"] = f"Strong {i}"
         vecs[x_post.anchor(ev)] = [1.0 if j == i else 0.0 for j in range(6)]
-    assert len(x_post.select(strong, posted=[])) == 4  # capped at the max
+    assert len(x_post.select(strong, posted=[])) == x_post.X_MAX_POSTS_PER_RUN  # capped at the max

@@ -17,7 +17,7 @@ MIN_EVENTS_PER_TOPIC = 3
 # "off" (default), "dry_run" (fill the compose box and screenshot, never post) or "live".
 # Events scoring >= X_MIN_POST_SCORE always qualify, up to X_MAX_POSTS_PER_RUN. If fewer than
 # X_TARGET_POSTS_PER_RUN qualify, the best remaining events down to X_FILL_MIN_SCORE fill the gap.
-X_MAX_POSTS_PER_RUN = 4
+X_MAX_POSTS_PER_RUN = 5
 X_TARGET_POSTS_PER_RUN = 3
 X_MIN_POST_SCORE = 1.5
 X_FILL_MIN_SCORE = 0.8
